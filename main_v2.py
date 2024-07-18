@@ -1,6 +1,4 @@
 import torch
-import torch.nn.functional as F
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 import hydra
 from omegaconf import DictConfig
 from torch.utils.data import DataLoader
@@ -15,6 +13,27 @@ from pathlib import Path
 from typing import Dict, Any
 import os
 import time
+
+import torch.nn.functional as F
+
+def multi_scale_loss(pred_flows, gt_flow):
+    total_loss = 0
+    weights = [0.32, 0.08, 0.02, 0.01]  # 各スケールの重み付け
+
+    for i, flow in enumerate(pred_flows):
+        if i < len(weights):  # 最後のフロー（最高解像度）は別途処理
+            weight = weights[i]
+            # ground truthを現在のフロー予測のサイズにリサイズ
+            scaled_gt = F.interpolate(gt_flow, size=flow.shape[2:], mode='bilinear', align_corners=False)
+            loss = compute_epe_error(flow, scaled_gt)
+            total_loss += weight * loss
+
+    # 最後のフロー（最高解像度）に対するロス
+    final_loss = compute_epe_error(pred_flows[-1], gt_flow)
+    total_loss += 0.57 * final_loss  # 最終的なフロー予測に最も大きな重みを付ける
+
+    return total_loss
+
 
 class RepresentationType(Enum):
     VOXEL = auto()
@@ -36,16 +55,6 @@ def compute_epe_error(pred_flow: torch.Tensor, gt_flow: torch.Tensor):
     '''
     epe = torch.mean(torch.mean(torch.norm(pred_flow - gt_flow, p=2, dim=1), dim=(1, 2)), dim=0)
     return epe
-
-# 追加
-def compute_multi_scale_loss(pred_flows, gt_flow, weights):
-    total_loss = 0
-    for scale, weight in weights.items():
-        # スケールに応じてgt_flowをリサイズ
-        scaled_gt_flow = F.interpolate(gt_flow, size=pred_flows[scale].shape[2:], mode='bilinear', align_corners=False)
-        loss = compute_epe_error(pred_flows[scale], scaled_gt_flow)
-        total_loss += weight * loss
-    return total_loss
 
 def save_optical_flow_to_npy(flow: torch.Tensor, file_name: str):
     '''
@@ -129,39 +138,38 @@ def main(args: DictConfig):
     # ------------------
     optimizer = torch.optim.Adam(model.parameters(), lr=args.train.initial_learning_rate, weight_decay=args.train.weight_decay)
     # ------------------
-    # 学習率スケジューラーの設定
-    # ------------------
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
-    # ------------------
     #   Start training
     # ------------------
-    # model.train()
+    model.train()
     for epoch in range(args.train.epochs):
-        model.train()
-        total_loss = 0
+        # total_loss = 0
+        # print("on epoch: {}".format(epoch+1))
+        # for i, batch in enumerate(tqdm(train_data)):
+        #     batch: Dict[str, Any]
+        #     event_image = batch["event_volume"].to(device) # [B, 4, 480, 640]
+        #     ground_truth_flow = batch["flow_gt"].to(device) # [B, 2, 480, 640]
+        #     flow = model(event_image) # [B, 2, 480, 640]
+        #     loss: torch.Tensor = compute_epe_error(flow, ground_truth_flow)
+        #     print(f"batch {i} loss: {loss.item()}")
+        #     optimizer.zero_grad()
+        #     loss.backward()
+        #     optimizer.step()
+
+        total_loss = 0  # ここで total_loss を初期化
         print("on epoch: {}".format(epoch+1))
         for i, batch in enumerate(tqdm(train_data)):
-            batch: Dict[str, Any]
-            event_image = batch["event_volume"].to(device) # [B, 4, 480, 640]
-            ground_truth_flow = batch["flow_gt"].to(device) # [B, 2, 480, 640]
-            # flow = model(event_image) # [B, 2, 480, 640]
-
-            multi_scale_flows = model(event_image)
-            weights = {'flow0': 0.32, 'flow1': 0.08, 'flow2': 0.02, 'flow3': 0.01}
-
-            # loss: torch.Tensor = compute_epe_error(flow, ground_truth_flow)
-            loss: torch.Tensor = compute_multi_scale_loss(multi_scale_flows, ground_truth_flow, weights)
-
+            event_image = batch["event_volume"].to(device)
+            ground_truth_flow = batch["flow_gt"].to(device)
+            
+            pred_flows = model(event_image)  # リストとして返される
+            loss = multi_scale_loss(pred_flows, ground_truth_flow)
             print(f"batch {i} loss: {loss.item()}")
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
             total_loss += loss.item()
-        avg_loss = total_loss / len(train_data)
-        print(f'Epoch {epoch+1}, Loss: {avg_loss}')
-
-        scheduler.step(avg_loss)  # avg_lossはトレーニングデータの平均損失
+        print(f'Epoch {epoch+1}, Loss: {total_loss / len(train_data)}')
 
     # Create the directory if it doesn't exist
     if not os.path.exists('checkpoints'):
@@ -185,9 +193,8 @@ def main(args: DictConfig):
             event_image = batch["event_volume"].to(device)
             # batch_flow = model(event_image) # [1, 2, 480, 640]
             # flow = torch.cat((flow, batch_flow), dim=0)  # [N, 2, 480, 640]
-            multi_scale_flows = model(event_image)
-            batch_flow = multi_scale_flows['flow3']  # [1, 2, 480, 640]
-            flow = torch.cat((flow, batch_flow), dim=0)  # [N, 2, 480, 640]
+            pred_flows = model(event_image)
+            flow = pred_flows[-1]  # 最終的なフロー予測を使用
         print("test done")
     # ------------------
     #  save submission

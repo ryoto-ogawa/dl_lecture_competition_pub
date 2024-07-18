@@ -182,6 +182,7 @@ class Sequence(Dataset):
         assert seq_path.is_dir()
         assert mode in {'train', 'test'}
         assert representation_type is not None
+
         '''
         ディレクトリ構造:
 

@@ -29,49 +29,75 @@ class EVFlowNet(nn.Module):
         self.decoder4 = upsample_conv2d_and_predict_flow(in_channels=2*_BASE_CHANNELS+2,
                         out_channels=int(_BASE_CHANNELS/2), do_batch_norm=not self._args.no_batch_norm)
 
-    def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        # encoder
-        skip_connections = {}
-        inputs = self.encoder1(inputs)
-        skip_connections['skip0'] = inputs.clone()
-        inputs = self.encoder2(inputs)
-        skip_connections['skip1'] = inputs.clone()
-        inputs = self.encoder3(inputs)
-        skip_connections['skip2'] = inputs.clone()
-        inputs = self.encoder4(inputs)
-        skip_connections['skip3'] = inputs.clone()
+    # def forward(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    #     # encoder
+    #     skip_connections = {}
+    #     inputs = self.encoder1(inputs)
+    #     skip_connections['skip0'] = inputs.clone()
+    #     inputs = self.encoder2(inputs)
+    #     skip_connections['skip1'] = inputs.clone()
+    #     inputs = self.encoder3(inputs)
+    #     skip_connections['skip2'] = inputs.clone()
+    #     inputs = self.encoder4(inputs)
+    #     skip_connections['skip3'] = inputs.clone()
 
-        # transition
-        inputs = self.resnet_block(inputs)
+    #     # transition
+    #     inputs = self.resnet_block(inputs)
 
-        # decoder
-        flow_dict = {}
-        inputs = torch.cat([inputs, skip_connections['skip3']], dim=1)
-        inputs, flow = self.decoder1(inputs)
-        flow_dict['flow0'] = flow.clone()
+    #     # decoder
+    #     flow_dict = {}
+    #     inputs = torch.cat([inputs, skip_connections['skip3']], dim=1)
+    #     inputs, flow = self.decoder1(inputs)
+    #     flow_dict['flow0'] = flow.clone()
 
-        inputs = torch.cat([inputs, skip_connections['skip2']], dim=1)
-        inputs, flow = self.decoder2(inputs)
-        flow_dict['flow1'] = flow.clone()
+    #     inputs = torch.cat([inputs, skip_connections['skip2']], dim=1)
+    #     inputs, flow = self.decoder2(inputs)
+    #     flow_dict['flow1'] = flow.clone()
 
-        inputs = torch.cat([inputs, skip_connections['skip1']], dim=1)
-        inputs, flow = self.decoder3(inputs)
-        flow_dict['flow2'] = flow.clone()
+    #     inputs = torch.cat([inputs, skip_connections['skip1']], dim=1)
+    #     inputs, flow = self.decoder3(inputs)
+    #     flow_dict['flow2'] = flow.clone()
 
-        inputs = torch.cat([inputs, skip_connections['skip0']], dim=1)
-        inputs, flow = self.decoder4(inputs)
-        flow_dict['flow3'] = flow.clone()
+    #     inputs = torch.cat([inputs, skip_connections['skip0']], dim=1)
+    #     inputs, flow = self.decoder4(inputs)
+    #     flow_dict['flow3'] = flow.clone()
 
-        # return flow
+    #     return flow
 
-        multi_scale_flow = {
-          'flow0': flow_dict['flow0'],
-          'flow1': flow_dict['flow1'],
-          'flow2': flow_dict['flow2'],
-          'flow3': flow_dict['flow3']
-        }
+    def forward(self, inputs: torch.Tensor) -> list[torch.Tensor]:
+    # encoder
+      skip_connections = {}
+      x = self.encoder1(inputs)
+      skip_connections['skip0'] = x.clone()
+      x = self.encoder2(x)
+      skip_connections['skip1'] = x.clone()
+      x = self.encoder3(x)
+      skip_connections['skip2'] = x.clone()
+      x = self.encoder4(x)
+      skip_connections['skip3'] = x.clone()
 
-        return multi_scale_flow
+      # transition
+      x = self.resnet_block(x)
+
+      # decoder
+      flows = []
+      x = torch.cat([x, skip_connections['skip3']], dim=1)
+      x, flow = self.decoder1(x)
+      flows.append(flow)
+
+      x = torch.cat([x, skip_connections['skip2']], dim=1)
+      x, flow = self.decoder2(x)
+      flows.append(flow)
+
+      x = torch.cat([x, skip_connections['skip1']], dim=1)
+      x, flow = self.decoder3(x)
+      flows.append(flow)
+
+      x = torch.cat([x, skip_connections['skip0']], dim=1)
+      x, flow = self.decoder4(x)
+      flows.append(flow)
+
+      return flows  # リストとして返す。最後の要素が最終的なフロー予測
         
 
 # if __name__ == "__main__":
